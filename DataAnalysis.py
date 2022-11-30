@@ -12,40 +12,35 @@ while(True) :
     URL = "https://raw.githubusercontent.com/Ultimate-Hosts-Blacklist/Ultimate.Hosts.Blacklist/master/hosts.deny/hosts0.deny"
     HOST_DENY_PATH = "HostDeny.txt"    #constants
     #MANUAL_DENY_PATH = "ManualDeny.txt"
-    GET_SOURCE = ("SELECT Source_Address FROM `backend`.`Incoming_Data` WHERE Malicious != \"True\" AND Malicious !=\"False\"")               #get the source ips
-    GET_DESTINATION = ("SELECT Destination_Address FROM `backend`.`Incoming_Data` WHERE Malicious != \"True\" AND Malicious != \"False\"")     #get the destination ips
-    GET_INCOMING_DATA = ("SELECT * FROM Incoming_Data WHERE Source_Address = %s OR Destination_Address = %s")           #get the data from database
-    UPDATE_MALICIOUS = ("UPDATE `backend`.`Incoming_Data` SET `Malicious` = %s WHERE (Source_Address = %s OR Destination_Address = %s) AND (Malicious != \"True\" AND Malicious !=\"False\")")            #update the malicious column
-    UPDATE_ALL_TIME = ("UPDATE `backend`.`Stats` set `Total_Malicious_Hits_IP` = `Total_Malicious_Hits_IP` + %s WHERE Date = %s")   #update the all time malicious ip counter
-    UPDATE_DAILY = ("UPDATE `backend`.`Stats` set `Daily_Malicious_IP` = `Daily_Malicious_IP` + %s WHERE Date = %s")    #update the daily malicious ip counter
+    GET_VALUES = ("SELECT Source_Address, Destination_Address, Source_Port, Destination_Port FROM `backend`.`Incoming_Data` WHERE Malicious != \"True\" AND Malicious !=\"False\"")
+    GET_INCOMING_DATA = ("SELECT * FROM Incoming_Data WHERE Source_Address = %s AND Destination_Address = %s AND Source_Port = %s AND Destination_Port = %s")           #get the data from database
+    UPDATE_MALICIOUS = ("""UPDATE `backend`.`Incoming_Data` SET `Malicious` = %s WHERE (Source_Address = %s AND Destination_Address = %s AND Source_Port = %s AND Destination_Port = %s) 
+                        AND (Malicious != \"True\" AND Malicious !=\"False\")""")            #update the malicious column
+    UPDATE_ALL_TIME = ("""UPDATE `backend`.`Stats` SET `Total_Malicious_Hits_IP` = `Total_Malicious_Hits_IP` + %s,
+                                                       `Total_Malicious_Hits_Port` = `Total_Malicious_Hits_Port` + %s WHERE Date = %s""")   #update the all time malicious ip counter
+    UPDATE_DAILY = ("""UPDATE `backend`.`Stats` SET `Daily_Malicious_IP` = `Daily_Malicious_IP` + %s, 
+                                                    `Daily_Malicious_Port` = `Daily_Malicious_Port` + %s WHERE  Date = %s""")    #update the daily malicious ip counter
     TODAY = str(time.mktime(date.today().timetuple()))
+    #print(TODAY)
 
     try:
         db = mysql.connector.connect(host='ipro-f22-db.crhoiczd7use.us-east-1.rds.amazonaws.com',   #connect to database
                                     user='BackendAdmin',
                                     password='R0ckBack3nd!',
                                     database='backend')
-        badips = []    #initalize array of bad ips
+        badips = []    #initalize array of bad ips and ports
+        badports = ["3389", "20", "23", "110", "143", "3306", "8080", "1433", "9200", "9300", "25", "445", "135", "21", "1434", "4333", "5432", "5500", "5601", "22", "3000", "5000", "8088"] 
 
-        getSourceCommand = db.cursor()          #our cursors
-        getDestinationCommand = db.cursor()
+        getValuesCommand = db.cursor()          #our cursors
         getIncomingDataCommand = db.cursor()
         updates = db.cursor()
 
         
-        getDestinationCommand.execute(GET_DESTINATION)       #get destination ips from the database
-        destinationips = getDestinationCommand.fetchall()
-        getSourceCommand.execute(GET_SOURCE)                 #get source ips from the database
-        sourceips = getSourceCommand.fetchall()
+        getValuesCommand.execute(GET_VALUES)       #get ips and ports from database
+        values = getValuesCommand.fetchall()       #put them in one list [sourceip, destip, sourceport, destport]
 
-        alldirtyips = destinationips + sourceips                 #combine all the not yet cleaned up ips
-        allips = []
-        for ips in alldirtyips :                            #get the single ips out of a list
-            allips.append(ips[0])                           #this gets us a cleaned up version of the ips
-
-        #Pull raw file from github, basically a txt file
         
-        download = requests.get(URL)
+        download = requests.get(URL)                #Pull raw file from github, basically a txt file
 
         deny = download.text.split('\n') #Split file by lines
         
@@ -64,42 +59,54 @@ while(True) :
                 for line in deny:
                     badips.append(line)"""
 
-        foundips = []                                   #where we'll store the ips that are confirmed to be infected
+        foundvals = []                                   #where we'll store the values that are confirmed to be infected
+        ips = 0                                          #the number of bad ips
+        ports = 0                                        #the number of bad ports
 
-
-                                                        #set the database entries to signify they are malicious. 
-                                                        #We need to set the bad ones first so we dont override when we find a non malicious one
-                                                        #since we use source and destination, we may say its not malicious before we even check the destination.3
-        for ip in allips :                              #for all the ips, find out if bad and store it
-            if (ip in badips) :
-                updates.execute(UPDATE_MALICIOUS, ["True", ip, ip])  
-                foundips.append(ip)
-        for ip in allips :
-            if (ip not in badips) :
-                updates.execute(UPDATE_MALICIOUS, ["False", ip, ip])
+                                                        
+        for vals in values :                              #we need to go through values and find out if they're malicious
+            tempports = 0                                 #increment this if they are, depending on port/ip value
+            tempips = 0
+            if (vals[0] in badips) :                      #compare the source and destination independently as they both signify individual malicious activity
+                tempips += 1
+            if (vals[1] in badips) :
+                tempips += 1
+            if (vals[2] in badports) : 
+                tempports += 1
+            if (vals[3] in badports) :
+                tempports += 1
+            if (tempips or tempports) :                   #after checking if malicious, if the values are anything but 0 they were malicious
+                updates.execute(UPDATE_MALICIOUS, ["True", vals[0], vals[1], vals[2], vals[3]])   #update database based on all 4 values (using all 4 four to be careful)
+                foundvals.append(vals)                                                            #store the bad ones
+                ips += tempips                                                                    #store how many were bad
+                ports += tempports
+            else :
+                updates.execute(UPDATE_MALICIOUS, ["False", vals[0], vals[1], vals[2], vals[3]]) #if we make it here, they were not malicious so update accordingly
 
         #update the count of our statistics MUST DO HERE BEFORE WE REMOVE DUPLICATES
-        num = len(foundips)
-        updates.execute(UPDATE_ALL_TIME, [num, TODAY])
-        updates.execute(UPDATE_DAILY, [num, TODAY])
+        updates.execute(UPDATE_ALL_TIME, [ips, ports, TODAY])                                     #change the stats based on what we found
+        updates.execute(UPDATE_DAILY, [ips, ports, TODAY])
 
-        foundips = list(set(foundips))                  #remove the duplicate found ips
+        foundvals = list(set(foundvals))                  #remove the duplicate found values
 
-        reportdata = []
-        with open('../Outgoing/Outgoing_Data/BadIPs.csv', 'w', newline = '') as badipcsv :     #open the bad ip csv file
+        #create the file with the bad values
+        baddata = []
+        with open('../Outgoing/Outgoing_Data/BadIPs.csv', 'a', newline = '') as badipcsv :     #open the bad ip csv file
             writer = csv.writer(badipcsv) 
-            if (foundips) :                             #if there exists bad ips
-                for ip in foundips :
-                    getIncomingDataCommand.execute(GET_INCOMING_DATA, [ip, ip])     #we want to return the row in database containing the bad ip
-                    baddata = (getIncomingDataCommand.fetchall())
-                    for bad in baddata :                    #when fetching, we may get multiple instances of the same ip address but on different machines
-                        writer.writerow(bad)                #write the row into our csv
+            if (foundvals) :                             #if there exists bad ips
+                for vals in foundvals :
+                    #print(vals)
+                    getIncomingDataCommand.execute(GET_INCOMING_DATA, [vals[0], vals[1], vals[2], vals[3]])     #we want to return the row in database containing the bad ip/ports
+                    bad = (getIncomingDataCommand.fetchall())
+                    baddata.append(bad)
+                for bad in baddata :                    #when fetching, we may get multiple instances of the same ip address but on different machines
+                    print(bad)
+                    writer.writerow(bad[0])                #write the row into our csv
             
 
 
         db.commit()                     #commit the changes  
-        getSourceCommand.close()        #close connections
-        getDestinationCommand.close()
+        getValuesCommand.close()        #close connections
         getIncomingDataCommand.close()
         updates.close()
     except Exception as e:
